@@ -6,8 +6,8 @@ from urllib.parse import urlparse
 
 import httpx
 from docx import Document
-from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field, HttpUrl
+from fastapi import FastAPI, Header, HTTPException, Request
+from pydantic import BaseModel, Field, HttpUrl, ValidationError
 from pypdf import PdfReader
 from pptx import Presentation
 
@@ -169,6 +169,34 @@ def normalize_text(text: str) -> str:
     return "\n".join(line.strip() for line in text.splitlines() if line.strip())
 
 
+async def read_extract_request(request: Request) -> ExtractRequest:
+    content_type = request.headers.get("content-type", "").lower()
+
+    try:
+        if content_type.startswith("application/json"):
+            payload: dict[str, Any] = await request.json()
+        elif content_type.startswith(
+            ("multipart/form-data", "application/x-www-form-urlencoded")
+        ):
+            form_data = await request.form()
+            payload = {
+                "file_url": form_data.get("file_url"),
+                "file_name": form_data.get("file_name"),
+                "max_chars": form_data.get("max_chars", DEFAULT_MAX_CHARS),
+            }
+        else:
+            raise HTTPException(
+                status_code=415,
+                detail="Use JSON, form-data, or x-www-form-urlencoded request body",
+            )
+
+        return ExtractRequest.model_validate(payload)
+    except HTTPException:
+        raise
+    except (ValidationError, ValueError, TypeError) as error:
+        raise HTTPException(status_code=422, detail=f"Invalid request body: {error}") from error
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -176,13 +204,14 @@ async def health() -> dict[str, str]:
 
 @app.post("/v1/extract", response_model=ExtractResponse)
 async def extract_document(
-    request: ExtractRequest,
+    request: Request,
     x_api_key: str | None = Header(default=None),
 ) -> ExtractResponse:
     require_api_key(x_api_key)
 
-    file_bytes = await download_file(str(request.file_url))
-    text, document_type = extract_text(request.file_name, file_bytes)
+    extract_request = await read_extract_request(request)
+    file_bytes = await download_file(str(extract_request.file_url))
+    text, document_type = extract_text(extract_request.file_name, file_bytes)
     normalized = normalize_text(text)
 
     if not normalized:
@@ -191,10 +220,10 @@ async def extract_document(
             detail="No extractable text was found. Scanned PDFs require OCR.",
         )
 
-    truncated = len(normalized) > request.max_chars
+    truncated = len(normalized) > extract_request.max_chars
     return ExtractResponse(
-        filename=request.file_name,
+        filename=extract_request.file_name,
         document_type=document_type,
-        text=normalized[: request.max_chars],
+        text=normalized[: extract_request.max_chars],
         truncated=truncated,
     )
