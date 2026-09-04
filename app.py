@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 import httpx
 from docx import Document
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, HttpUrl, ValidationError
 from pypdf import PdfReader
 from pptx import Presentation
@@ -197,17 +198,10 @@ async def read_extract_request(request: Request) -> ExtractRequest:
         raise HTTPException(status_code=422, detail=f"Invalid request body: {error}") from error
 
 
-@app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-@app.post("/v1/extract", response_model=ExtractResponse)
-async def extract_document(
-    request: Request,
-    x_api_key: str | None = Header(default=None),
-) -> ExtractResponse:
-    require_api_key(x_api_key)
+async def parse_document(
+    request: Request, api_key: str | None
+) -> tuple[str, str, str, bool]:
+    require_api_key(api_key)
 
     extract_request = await read_extract_request(request)
     file_bytes = await download_file(str(extract_request.file_url))
@@ -221,9 +215,40 @@ async def extract_document(
         )
 
     truncated = len(normalized) > extract_request.max_chars
+    return (
+        extract_request.file_name,
+        normalized[: extract_request.max_chars],
+        document_type,
+        truncated,
+    )
+
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.post("/v1/extract", response_model=ExtractResponse)
+async def extract_document(
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+) -> ExtractResponse:
+    filename, text, document_type, truncated = await parse_document(request, x_api_key)
     return ExtractResponse(
-        filename=extract_request.file_name,
+        filename=filename,
         document_type=document_type,
-        text=normalized[: extract_request.max_chars],
+        text=text,
         truncated=truncated,
+    )
+
+
+@app.post("/v1/extract-text", response_class=PlainTextResponse)
+async def extract_document_text(
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+) -> PlainTextResponse:
+    _, text, _, _ = await parse_document(request, x_api_key)
+    return PlainTextResponse(
+        text,
+        headers={"Content-Disposition": "inline"},
     )

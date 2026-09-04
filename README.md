@@ -27,6 +27,12 @@ Invoke-WebRequest http://127.0.0.1:8000/health
 
 `POST /v1/extract`
 
+Returns structured JSON for debugging or service integration.
+
+`POST /v1/extract-text`
+
+Returns only the extracted document text as `text/plain`. Use this endpoint in the YZNU workflow when the next node is an LLM, so the HTTP node's `body` can be passed directly to the course-classification prompt.
+
 Required header:
 
 ```text
@@ -52,6 +58,14 @@ Successful response:
   "text": "Extracted document text...",
   "truncated": false
 }
+```
+
+Both endpoints accept the same request body and required `X-API-Key` header. The workflow platform can use `multipart/form-data` with these fields:
+
+```text
+file_url=<uploaded file url>
+file_name=<uploaded file name>
+max_chars=12000
 ```
 
 ## Deploy With Docker
